@@ -1,0 +1,70 @@
+{
+  "dataset": "heart_disease",
+  "disease_category": "Cardiovascular",
+  "display_name": "UCI Heart Disease (Cleveland)",
+  "n_patients": 297,
+  "features_used": [
+    "thalach",
+    "oldpeak",
+    "ca",
+    "thal"
+  ],
+  "classical_results": {
+    "SVM": {
+      "auc_mean": 0.8784308862433863,
+      "auc_std": 0.02729990276842686,
+      "f1_mean": 0.7683260983179923,
+      "sensitivity_mean": 0.8031746031746032,
+      "best_params": {
+        "C": 0.1,
+        "gamma": "auto",
+        "kernel": "rbf"
+      }
+    },
+    "Random Forest": {
+      "auc_mean": 0.8841559193121693,
+      "auc_std": 0.021795423316523843,
+      "f1_mean": 0.7777866286609598,
+      "sensitivity_mean": 0.7513227513227513,
+      "best_params": {
+        "max_depth": 3,
+        "min_samples_split": 2,
+        "n_estimators": 200
+      }
+    },
+    "MLP": {
+      "auc_mean": 0.8934275793650794,
+      "auc_std": 0.024035119737274256,
+      "f1_mean": 0.792753966608414,
+      "sensitivity_mean": 0.7804232804232804,
+      "best_params": {
+        "alpha": 0.0001,
+        "hidden_layer_sizes": [
+          32
+        ],
+        "learning_rate_init": 0.001
+      }
+    }
+  },
+  "hybrid_qml_results": {
+    "auc_mean": 0.8858713624338623,
+    "auc_std": 0.024294023737376266,
+    "f1_mean": 0.7822276508189404,
+    "sensitivity_mean": 0.7661375661375661
+  },
+  "statistical_comparison": {
+    "model_a": "Hybrid QML",
+    "model_b": "MLP",
+    "mean_a": 0.8858713624338623,
+    "mean_b": 0.8934275793650794,
+    "paired_t_test": {
+      "statistic": -2.407130909255584,
+      "p_value": 0.07378375584467635
+    },
+    "wilcoxon_test": {
+      "statistic": 1.0,
+      "p_value": 0.125
+    },
+    "significant_at_0.05": false
+  }
+}

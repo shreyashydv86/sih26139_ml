@@ -1,0 +1,70 @@
+{
+  "dataset": "breast_cancer",
+  "disease_category": "Cancer",
+  "display_name": "Breast Cancer Wisconsin (Diagnostic)",
+  "n_patients": 569,
+  "features_used": [
+    "mean concave points",
+    "worst radius",
+    "worst perimeter",
+    "worst concave points"
+  ],
+  "classical_results": {
+    "SVM": {
+      "auc_mean": 0.9879374437841519,
+      "auc_std": 0.010019919169992526,
+      "f1_mean": 0.9261449621153407,
+      "sensitivity_mean": 0.901107419712071,
+      "best_params": {
+        "C": 1,
+        "gamma": "auto",
+        "kernel": "rbf"
+      }
+    },
+    "Random Forest": {
+      "auc_mean": 0.9835760796475668,
+      "auc_std": 0.011913021771991605,
+      "f1_mean": 0.9173102577671415,
+      "sensitivity_mean": 0.9059800664451828,
+      "best_params": {
+        "max_depth": 3,
+        "min_samples_split": 2,
+        "n_estimators": 100
+      }
+    },
+    "MLP": {
+      "auc_mean": 0.9887890868033352,
+      "auc_std": 0.007866604812612182,
+      "f1_mean": 0.9153809323655097,
+      "sensitivity_mean": 0.901107419712071,
+      "best_params": {
+        "alpha": 0.01,
+        "hidden_layer_sizes": [
+          32
+        ],
+        "learning_rate_init": 0.001
+      }
+    }
+  },
+  "hybrid_qml_results": {
+    "auc_mean": 0.9796072949323851,
+    "auc_std": 0.012247982455546948,
+    "f1_mean": 0.9099635484381391,
+    "sensitivity_mean": 0.8966777408637874
+  },
+  "statistical_comparison": {
+    "model_a": "Hybrid QML",
+    "model_b": "MLP",
+    "mean_a": 0.9796072949323851,
+    "mean_b": 0.9887890868033351,
+    "paired_t_test": {
+      "statistic": -2.6068967878647507,
+      "p_value": 0.05961410192093188
+    },
+    "wilcoxon_test": {
+      "statistic": 0.0,
+      "p_value": 0.0625
+    },
+    "significant_at_0.05": false
+  }
+}

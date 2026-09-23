@@ -1,0 +1,70 @@
+{
+  "dataset": "parkinsons",
+  "disease_category": "Neurological",
+  "display_name": "UCI Parkinson's Disease (voice measurements)",
+  "n_patients": 195,
+  "features_used": [
+    "MDVP:Fo(Hz)",
+    "spread1",
+    "spread2",
+    "PPE"
+  ],
+  "classical_results": {
+    "SVM": {
+      "auc_mean": 0.9475862068965517,
+      "auc_std": 0.035862432820995674,
+      "f1_mean": 0.9325848079080886,
+      "sensitivity_mean": 0.9386206896551723,
+      "best_params": {
+        "C": 10,
+        "gamma": "scale",
+        "kernel": "rbf"
+      }
+    },
+    "Random Forest": {
+      "auc_mean": 0.9412771392081737,
+      "auc_std": 0.02697796287756265,
+      "f1_mean": 0.921279896973145,
+      "sensitivity_mean": 0.9524137931034483,
+      "best_params": {
+        "max_depth": null,
+        "min_samples_split": 2,
+        "n_estimators": 100
+      }
+    },
+    "MLP": {
+      "auc_mean": 0.9578544061302683,
+      "auc_std": 0.027657893705846193,
+      "f1_mean": 0.9205125100887812,
+      "sensitivity_mean": 0.9319540229885057,
+      "best_params": {
+        "alpha": 0.01,
+        "hidden_layer_sizes": [
+          32
+        ],
+        "learning_rate_init": 0.01
+      }
+    }
+  },
+  "hybrid_qml_results": {
+    "auc_mean": 0.8612515964240103,
+    "auc_std": 0.07264596835335668,
+    "f1_mean": 0.8781664371434192,
+    "sensitivity_mean": 1.0
+  },
+  "statistical_comparison": {
+    "model_a": "Hybrid QML",
+    "model_b": "MLP",
+    "mean_a": 0.8612515964240103,
+    "mean_b": 0.9578544061302683,
+    "paired_t_test": {
+      "statistic": -3.2606428934362204,
+      "p_value": 0.031061968101809508
+    },
+    "wilcoxon_test": {
+      "statistic": 0.0,
+      "p_value": 0.0625
+    },
+    "significant_at_0.05": true
+  }
+}
