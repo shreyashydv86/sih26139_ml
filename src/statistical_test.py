@@ -1,54 +1,144 @@
 """
-SIH26139 -- Statistical significance testing.
+SIH26139 -- Statistical comparison of model performance.
 
-Compares the hybrid quantum model's per-fold AUC scores against the
-best classical baseline's per-fold AUC scores using a paired test.
-Reporting this p-value honestly -- whether or not it favours the
-quantum model -- is what separates a research-grade comparison from
-a single lucky number.
+Compares paired outer-CV AUC scores using:
+1. Paired t-test
+2. Wilcoxon signed-rank test
+
+Both tests are reported separately.
 """
 
-from scipy import stats
+import numpy as np
+
+from scipy.stats import ttest_rel, wilcoxon
 
 
-def compare_models(fold_scores_a: list, fold_scores_b: list,
-                    name_a: str = "Hybrid QML",
-                    name_b: str = "Best classical baseline"):
+def compare_models(
+    scores_a,
+    scores_b,
+    name_a="Model A",
+    name_b="Model B"
+):
     """
-    Runs both a paired t-test and a Wilcoxon signed-rank test (the
-    non-parametric alternative, more appropriate with only 5-10 folds)
-    and reports both so the comparison is defensible either way.
+    Compare two models using paired outer-CV scores.
     """
-    t_stat, t_pvalue = stats.ttest_rel(fold_scores_a, fold_scores_b)
 
+    scores_a = np.asarray(
+        scores_a,
+        dtype=float
+    )
+
+    scores_b = np.asarray(
+        scores_b,
+        dtype=float
+    )
+
+    if len(scores_a) != len(scores_b):
+        raise ValueError(
+            "Both models must have the same "
+            "number of CV fold scores."
+        )
+
+    if len(scores_a) < 2:
+        raise ValueError(
+            "At least two paired fold scores "
+            "are required."
+        )
+
+    # Paired t-test
+    t_statistic, t_p_value = ttest_rel(
+        scores_a,
+        scores_b
+    )
+
+    # Wilcoxon signed-rank test
     try:
-        w_stat, w_pvalue = stats.wilcoxon(fold_scores_a, fold_scores_b)
-    except ValueError:
-        # Wilcoxon fails if all paired differences are zero, or with
-        # too few folds -- fall back gracefully.
-        w_stat, w_pvalue = None, None
 
-    result = {
+        w_statistic, w_p_value = wilcoxon(
+            scores_a,
+            scores_b,
+            zero_method="wilcox",
+            alternative="two-sided"
+        )
+
+    except ValueError:
+
+        w_statistic = 0.0
+        w_p_value = 1.0
+
+    # Mean AUC values
+    mean_a = float(
+        np.mean(scores_a)
+    )
+
+    mean_b = float(
+        np.mean(scores_b)
+    )
+
+    mean_difference = (
+        mean_a - mean_b
+    )
+
+    # Return complete result
+    return {
         "model_a": name_a,
         "model_b": name_b,
-        "mean_a": sum(fold_scores_a) / len(fold_scores_a),
-        "mean_b": sum(fold_scores_b) / len(fold_scores_b),
-        "paired_t_test": {"statistic": float(t_stat), "p_value": float(t_pvalue)},
-        "wilcoxon_test": {
-            "statistic": float(w_stat) if w_stat is not None else None,
-            "p_value": float(w_pvalue) if w_pvalue is not None else None,
+
+        "mean_auc_a": mean_a,
+        "mean_auc_b": mean_b,
+
+        "mean_auc_difference_a_minus_b":
+            float(mean_difference),
+
+        "paired_t_test": {
+            "statistic":
+                float(t_statistic),
+
+            "p_value":
+                float(t_p_value),
+
+            "significant_at_0.05":
+                bool(t_p_value < 0.05)
         },
-        "significant_at_0.05": bool(t_pvalue < 0.05),
+
+        "wilcoxon_test": {
+            "statistic":
+                float(w_statistic),
+
+            "p_value":
+                float(w_p_value),
+
+            "significant_at_0.05":
+                bool(w_p_value < 0.05)
+        }
     }
-    return result
 
 
-def print_comparison(result: dict):
-    print(f"\n  {result['model_a']} vs {result['model_b']}")
-    print(f"    Mean AUC -- {result['model_a']}: {result['mean_a']:.4f}")
-    print(f"    Mean AUC -- {result['model_b']}: {result['mean_b']:.4f}")
-    print(f"    Paired t-test p-value:  {result['paired_t_test']['p_value']:.4f}")
-    if result["wilcoxon_test"]["p_value"] is not None:
-        print(f"    Wilcoxon p-value:       {result['wilcoxon_test']['p_value']:.4f}")
-    verdict = "statistically significant" if result["significant_at_0.05"] else "NOT statistically significant"
-    print(f"    Verdict (alpha=0.05):   difference is {verdict}")
+if __name__ == "__main__":
+
+    qml_scores = [
+        0.90,
+        0.88,
+        0.91,
+        0.89,
+        0.90
+    ]
+
+    classical_scores = [
+        0.92,
+        0.90,
+        0.93,
+        0.91,
+        0.92
+    ]
+
+    result = compare_models(
+        qml_scores,
+        classical_scores,
+        name_a="Hybrid QML",
+        name_b="Classical Model"
+    )
+
+    print("Statistical comparison:")
+
+    print(result)

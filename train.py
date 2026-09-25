@@ -1,126 +1,324 @@
 """
-SIH26139 -- End-to-end training orchestrator.
+SIH26139 -- Main training pipeline.
 
-Run this single script to reproduce the entire pipeline:
-data loading -> classical baselines -> hybrid QML training ->
-SHAP explanations -> statistical comparison -> final report.
-
-Usage
------
-    python train.py
-    python train.py --source data/raw/heart_disease.csv   # local file instead of the UCI URL
-    python train.py --k-features 6 --n-splits 10
+Pipeline:
+1. Load raw dataset
+2. Create outer cross-validation folds
+3. Run leakage-free classical baselines
+4. Run leakage-free hybrid QML
+5. Compare QML with classical models
+6. Save results to JSON
 """
 
 import argparse
 import json
-import sys
-import os
-import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-
-from preprocessing import prepare_dataset, UCI_URL
-from classical_baselines import run_all_baselines
-from quantum_model import evaluate_hybrid_with_cv
-from shap_explain import explain_predictions, explain_single_patient
-from statistical_test import compare_models, print_comparison
+from src.preprocessing import prepare_dataset
+from src.classical_baselines import run_all_baselines
+from src.quantum_model import evaluate_hybrid_with_cv
+from src.statistical_test import compare_models
 
 
-def main(dataset: str, source: str, k_features: int, n_splits: int, epochs: int):
-    print("=" * 60)
-    print("SIH26139 -- Hybrid Quantum-Classical Disease Detection")
-    print("=" * 60)
+def run_experiment(
+    dataset,
+    source=None,
+    k_features=4,
+    n_splits=5,
+    epochs=50
+):
 
-    print(f"\n[1/5] Loading and preprocessing data ({dataset})...")
-    data = prepare_dataset(dataset=dataset, source=source,
-                            k_features=k_features, n_splits=n_splits)
-    print(f"  {data['display_name']}  ({data['disease_category']})")
-    print(f"  Patients: {data['n_patients']}  |  Features selected: {data['feature_names']}")
+    print("\n" + "=" * 70)
+    print("SIH26139 HYBRID QUANTUM-CLASSICAL ML")
+    print("=" * 70)
 
-    print("\n[2/5] Tuning and evaluating classical baselines...")
-    classical_results = run_all_baselines(data["X"], data["y"], data["folds"])
+    print(f"\nDataset: {dataset}")
+    print(f"Features selected per fold: {k_features}")
+    print(f"Outer CV folds: {n_splits}")
+    print(f"QML epochs: {epochs}")
 
-    print("\n[3/5] Training hybrid quantum-classical model across folds...")
+    # ==========================================================
+    # STEP 1: DATASET PREPARATION
+    # ==========================================================
+
+    print("\n" + "=" * 70)
+    print("STEP 1: DATASET PREPARATION")
+    print("=" * 70)
+
+    data = prepare_dataset(
+        dataset=dataset,
+        source=source,
+        k_features=k_features,
+        n_splits=n_splits
+    )
+
+    print(f"\nDataset: {data['display_name']}")
+    print(f"Category: {data['disease_category']}")
+    print(f"Patients: {data['n_patients']}")
+    print(
+        f"Original features: "
+        f"{len(data['feature_names'])}"
+    )
+    print(f"CV folds: {len(data['folds'])}")
+
+    # ==========================================================
+    # STEP 2: CLASSICAL BASELINES
+    # ==========================================================
+
+    print("\n" + "=" * 70)
+    print("STEP 2: CLASSICAL BASELINES")
+    print("=" * 70)
+
+    classical_results = run_all_baselines(
+        X_raw=data["X_raw"],
+        y=data["y"],
+        folds=data["folds"],
+        k_features=data["k_features"]
+    )
+
+    # ==========================================================
+    # STEP 3: HYBRID QML
+    # ==========================================================
+
+    print("\n" + "=" * 70)
+    print("STEP 3: HYBRID QUANTUM-CLASSICAL MODEL")
+    print("=" * 70)
+
     quantum_scores, quantum_models = evaluate_hybrid_with_cv(
-        data["X"], data["y"], data["folds"], epochs=epochs
+        X_raw=data["X_raw"],
+        y=data["y"],
+        folds=data["folds"],
+        k_features=data["k_features"],
+        epochs=epochs
     )
-    print(f"  Hybrid QML: AUC = {quantum_scores['auc']['mean']:.3f} +/- {quantum_scores['auc']['std']:.3f}")
 
-    print("\n[4/5] Computing SHAP explanations for sample patients...")
-    best_fold = int(np.argmax(quantum_scores["auc"]["folds"]))
-    best_model = quantum_models[best_fold]
-    train_idx, test_idx = data["folds"][best_fold]
-    n_explain = min(3, len(test_idx))
-    shap_values, _ = explain_predictions(
-        best_model,
-        X_background=data["X"][train_idx],
-        X_explain=data["X"][test_idx][:n_explain],
-        feature_names=data["feature_names"],
-    )
-    for i, row in enumerate(shap_values):
-        readable = explain_single_patient(row, data["feature_names"])
-        print(f"  Patient {i + 1}: " + ", ".join(f"{f}={v:+.3f}" for f, v in readable.items()))
+    # ==========================================================
+    # STEP 4: STATISTICAL COMPARISON
+    # ==========================================================
 
-    print("\n[5/5] Statistical comparison -- Hybrid QML vs best classical baseline...")
+    print("\n" + "=" * 70)
+    print("STEP 4: STATISTICAL COMPARISON")
+    print("=" * 70)
+
+    statistical_results = {}
+
+    qml_auc = quantum_scores["auc"]["folds"]
+
+    for model_name, model_result in classical_results.items():
+
+        classical_auc = model_result["metrics"]["auc"]["folds"]
+
+        print(
+            f"\nComparing Hybrid QML vs {model_name}"
+        )
+
+        comparison = compare_models(
+            qml_auc,
+            classical_auc,
+            name_a="Hybrid QML",
+            name_b=model_name
+        )
+
+        statistical_results[model_name] = comparison
+
+    # ==========================================================
+    # STEP 5: SUMMARY
+    # ==========================================================
+
     best_classical_name = max(
         classical_results,
-        key=lambda k: classical_results[k]["metrics"]["auc"]["mean"],
+        key=lambda name:
+        classical_results[name]["metrics"]["auc"]["mean"]
     )
-    comparison = compare_models(
-        quantum_scores["auc"]["folds"],
-        classical_results[best_classical_name]["metrics"]["auc"]["folds"],
-        name_a="Hybrid QML",
-        name_b=best_classical_name,
+
+    best_classical_auc = classical_results[
+        best_classical_name
+    ]["metrics"]["auc"]["mean"]
+
+    qml_auc_mean = quantum_scores["auc"]["mean"]
+
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+
+    print(
+        f"\nBest classical model by mean AUC: "
+        f"{best_classical_name}"
     )
-    print_comparison(comparison)
+
+    print(
+        f"Best classical mean AUC: "
+        f"{best_classical_auc:.4f}"
+    )
+
+    print(
+        f"Hybrid QML mean AUC: "
+        f"{qml_auc_mean:.4f}"
+    )
+
+    # ==========================================================
+    # STEP 6: CREATE JSON REPORT
+    # ==========================================================
 
     report = {
-        "dataset": data["dataset"],
-        "disease_category": data["disease_category"],
-        "display_name": data["display_name"],
-        "n_patients": data["n_patients"],
-        "features_used": data["feature_names"],
-        "classical_results": {
-            name: {
-                "auc_mean": r["metrics"]["auc"]["mean"],
-                "auc_std": r["metrics"]["auc"]["std"],
-                "f1_mean": r["metrics"]["f1"]["mean"],
-                "sensitivity_mean": r["metrics"]["sensitivity"]["mean"],
-                "best_params": r["best_params"],
-            }
-            for name, r in classical_results.items()
+        "project": "SIH26139",
+
+        "dataset": dataset,
+
+        "dataset_display_name":
+            data["display_name"],
+
+        "disease_category":
+            data["disease_category"],
+
+        "dataset_information": {
+            "n_patients":
+                data["n_patients"],
+
+            "original_features":
+                len(data["feature_names"]),
+
+            "selected_features_per_fold":
+                k_features,
+
+            "outer_cv_folds":
+                n_splits
         },
-        "hybrid_qml_results": {
-            "auc_mean": quantum_scores["auc"]["mean"],
-            "auc_std": quantum_scores["auc"]["std"],
-            "f1_mean": quantum_scores["f1"]["mean"],
-            "sensitivity_mean": quantum_scores["sensitivity"]["mean"],
+
+        "methodology": {
+            "feature_selection":
+                "SelectKBest with f_classif",
+
+            "scaling":
+                "MinMaxScaler to [0, pi]",
+
+            "cross_validation":
+                "StratifiedKFold with shuffle=True and random_state=42",
+
+            "classical_tuning":
+                "GridSearchCV inside outer training folds",
+
+            "qml_qubits":
+                4,
+
+            "qml_layers":
+                2,
+
+            "qml_epochs":
+                epochs
         },
-        "statistical_comparison": comparison,
+
+        "classical_results":
+            classical_results,
+
+        "hybrid_qml_results":
+            quantum_scores,
+
+        "statistical_comparisons":
+            statistical_results,
+
+        "summary": {
+            "best_classical_model_by_mean_auc":
+                best_classical_name,
+
+            "best_classical_mean_auc":
+                float(best_classical_auc),
+
+            "hybrid_qml_mean_auc":
+                float(qml_auc_mean)
+        }
     }
 
-    out_path = os.path.join(os.path.dirname(__file__), f"results_report_{dataset}.json")
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2)
+    # ==========================================================
+    # SAVE REPORT
+    # ==========================================================
 
-    print("\n" + "=" * 60)
-    print(f"Done. Full results saved to {out_path}")
-    print("=" * 60)
+    output_file = (
+        f"results_report_{dataset}.json"
+    )
+
+    with open(
+        output_file,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            report,
+            file,
+            indent=2
+        )
+
+    print("\n" + "=" * 70)
+    print("EXPERIMENT COMPLETE")
+    print("=" * 70)
+
+    print(
+        f"\nFull results saved to: "
+        f"{output_file}"
+    )
+
     return report
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="heart_disease",
-                         choices=["heart_disease", "breast_cancer", "parkinsons"],
-                         help="Which disease to train on")
-    parser.add_argument("--source", default=None,
-                         help="Override the default URL/location for the chosen dataset "
-                              "(ignored for breast_cancer, which needs no download)")
-    parser.add_argument("--k-features", type=int, default=4)
-    parser.add_argument("--n-splits", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=50)
+def main():
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "SIH26139 Hybrid Quantum-Classical "
+            "Disease Detection"
+        )
+    )
+
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="breast_cancer",
+        choices=[
+            "breast_cancer",
+            "heart_disease",
+            "parkinsons"
+        ],
+        help="Dataset to evaluate"
+    )
+
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Optional local dataset file or URL"
+    )
+
+    parser.add_argument(
+        "--k-features",
+        type=int,
+        default=4,
+        help="Number of features selected per fold"
+    )
+
+    parser.add_argument(
+        "--n-splits",
+        type=int,
+        default=5,
+        help="Number of outer CV folds"
+    )
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=50,
+        help="QML training epochs"
+    )
+
     args = parser.parse_args()
 
-    main(args.dataset, args.source, args.k_features, args.n_splits, args.epochs)
+    run_experiment(
+        dataset=args.dataset,
+        source=args.source,
+        k_features=args.k_features,
+        n_splits=args.n_splits,
+        epochs=args.epochs
+    )
+
+
+if __name__ == "__main__":
+    main()

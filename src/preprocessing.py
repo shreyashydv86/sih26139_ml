@@ -1,219 +1,411 @@
 """
-SIH26139 -- Hybrid Quantum-Classical ML Platform
-Data preprocessing module -- multi-disease.
+SIH26139 -- Dataset loading and leakage-free preprocessing.
 
-Supports three disease domains out of the box, directly matching the
-problem statement's own wording ("early detection of cancer,
-cardiovascular or neurological disease"):
+Supports:
+- Breast Cancer Wisconsin dataset
+- UCI Heart Disease (Cleveland)
+- UCI Parkinson's Disease
 
-    "heart_disease" -- UCI Cleveland Heart Disease   (Cardiovascular)
-    "breast_cancer" -- Breast Cancer Wisconsin        (Cancer)
-    "parkinsons"    -- UCI Parkinson's voice dataset  (Neurological)
-
-The SAME downstream pipeline (feature selection, angle-range scaling,
-cross-validation splitting -- and therefore the same quantum circuit
-in quantum_model.py) runs unchanged regardless of which disease is
-selected. This is what actually proves the "disease-agnostic modular
-design" claim rather than just asserting it on a slide.
+Feature selection and scaling are fitted ONLY on the training portion
+of each cross-validation fold to prevent data leakage.
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+
+from sklearn.datasets import load_breast_cancer as sklearn_load_breast_cancer
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.model_selection import StratifiedKFold
-from sklearn.datasets import load_breast_cancer
-
-HEART_DISEASE_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data"
-PARKINSONS_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/parkinsons/parkinsons.data"
-
-# Kept for backward compatibility with the single-disease version of this module.
-UCI_URL = HEART_DISEASE_URL
-
-HEART_DISEASE_COLUMNS = [
-    "age", "sex", "cp", "trestbps", "chol", "fbs", "restecg",
-    "thalach", "exang", "oldpeak", "slope", "ca", "thal", "target"
-]
+from sklearn.preprocessing import MinMaxScaler
 
 
-def _load_heart_disease(source: str = HEART_DISEASE_URL):
-    """Cardiovascular. ~297 patients after cleaning, 13 features."""
-    df = pd.read_csv(source, names=HEART_DISEASE_COLUMNS, na_values="?")
-    df = df.dropna().reset_index(drop=True)
-    df["target"] = (df["target"] > 0).astype(int)
+# ============================================================
+# DATASET LOADERS
+# ============================================================
+
+def _load_heart_disease(source):
+    """
+    Load UCI Cleveland Heart Disease dataset.
+    """
+
+    columns = [
+        "age",
+        "sex",
+        "cp",
+        "trestbps",
+        "chol",
+        "fbs",
+        "restecg",
+        "thalach",
+        "exang",
+        "oldpeak",
+        "slope",
+        "ca",
+        "thal",
+        "target",
+    ]
+
+    df = pd.read_csv(
+        source,
+        names=columns,
+        na_values="?"
+    )
+
+    df = df.dropna()
+
     X = df.drop(columns=["target"])
-    y = df["target"].values
-    return X, y
+    y = (df["target"] > 0).astype(int)
+
+    return X, y.values
 
 
-def _load_breast_cancer(source: str = None):
+def _load_breast_cancer(source=None):
     """
-    Cancer. 569 patients, 30 features. Ships with scikit-learn --
-    no network access or download required, which makes it the most
-    reliable second disease to add under a tight deadline.
+    Load the Breast Cancer Wisconsin Diagnostic dataset.
 
-    sklearn encodes target as 0 = malignant, 1 = benign; flipped here
-    so 1 always means "disease present", consistent with the other
-    two loaders.
+    This dataset is included with scikit-learn, so no internet
+    connection is required.
     """
-    data = load_breast_cancer(as_frame=True)
-    X = data.frame.drop(columns=["target"])
-    y = (data.frame["target"] == 0).astype(int).values
-    return X, y
+
+    data = sklearn_load_breast_cancer(as_frame=True)
+
+    X = data.data
+
+    # sklearn uses:
+    # 0 = malignant
+    # 1 = benign
+    #
+    # We want:
+    # 1 = disease
+    # 0 = no disease
+    y = (data.target == 0).astype(int)
+
+    return X, y.values
 
 
-def _load_parkinsons(source: str = PARKINSONS_URL):
+def _load_parkinsons(source):
     """
-    Neurological. 195 voice recordings, 22 biomedical voice measures.
-    target: 'status' column, 1 = Parkinson's, 0 = healthy -- already
-    matches the "1 = disease" convention used elsewhere.
+    Load UCI Parkinson's voice-measurement dataset.
     """
+
     df = pd.read_csv(source)
-    df = df.drop(columns=["name"])  # patient identifier, not a feature
-    y = df["status"].values
+
+    # The 'name' column identifies the patient/file and is not
+    # used as a machine-learning feature.
+    if "name" in df.columns:
+        df = df.drop(columns=["name"])
+
+    y = df["status"].astype(int).values
+
     X = df.drop(columns=["status"])
+
     return X, y
 
+
+# ============================================================
+# DATASET REGISTRY
+# ============================================================
 
 DATASET_REGISTRY = {
+
     "heart_disease": {
         "loader": _load_heart_disease,
-        "default_source": HEART_DISEASE_URL,
+        "default_source": (
+            "https://archive.ics.uci.edu/ml/machine-learning-databases/"
+            "heart-disease/processed.cleveland.data"
+        ),
         "disease_category": "Cardiovascular",
         "display_name": "UCI Heart Disease (Cleveland)",
     },
+
     "breast_cancer": {
         "loader": _load_breast_cancer,
         "default_source": None,
         "disease_category": "Cancer",
         "display_name": "Breast Cancer Wisconsin (Diagnostic)",
     },
+
     "parkinsons": {
         "loader": _load_parkinsons,
-        "default_source": PARKINSONS_URL,
+        "default_source": (
+            "https://archive.ics.uci.edu/ml/machine-learning-databases/"
+            "parkinsons/parkinsons.data"
+        ),
         "disease_category": "Neurological",
         "display_name": "UCI Parkinson's Disease (voice measurements)",
     },
 }
 
 
-def select_features(X: pd.DataFrame, y: np.ndarray, k: int = 4):
+# ============================================================
+# CROSS-VALIDATION
+# ============================================================
+
+def get_cv_splits(X, y, n_splits=5):
     """
-    Select the k most predictive features using the ANOVA F-test.
+    Create stratified outer cross-validation folds.
 
-    Deliberately using SelectKBest instead of PCA: this keeps the
-    ORIGINAL feature names intact, so SHAP explanations later say
-    "cholesterol" and "chest pain type" instead of uninterpretable
-    principal components. This directly fixes the PCA/SHAP
-    interpretability gap flagged during problem-statement review,
-    and it's what makes the SAME selection logic work sensibly across
-    completely different feature sets (13 cardiac features, 30 cancer
-    cell-nucleus measurements, 22 voice-recording features) without
-    any per-disease tuning.
-
-    Returns
-    -------
-    X_selected : np.ndarray, shape (n_samples, k)
-    selected_names : list[str], the k chosen feature names, in order
-    selector : fitted SelectKBest object (needed to transform new
-               patient data at inference time)
+    IMPORTANT:
+    No feature selection or scaling is performed here.
     """
-    k = min(k, X.shape[1])
-    selector = SelectKBest(score_func=f_classif, k=k)
-    X_selected = selector.fit_transform(X, y)
-    selected_mask = selector.get_support()
-    selected_names = X.columns[selected_mask].tolist()
-    return X_selected, selected_names, selector
+
+    cv = StratifiedKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=42
+    )
+
+    return list(cv.split(X, y))
 
 
-def scale_to_angle_range(X: np.ndarray):
+# ============================================================
+# LEAKAGE-FREE FOLD PREPROCESSING
+# ============================================================
+
+def preprocess_fold(
+    X_train,
+    X_test,
+    y_train,
+    k_features=4
+):
     """
-    Scale features to [0, pi] for quantum angle embedding.
-    Each qubit's rotation gate expects an angle in this range.
+    Perform feature selection and scaling for ONE CV fold.
+
+    Feature selector:
+        fitted ONLY on X_train / y_train
+
+    Scaler:
+        fitted ONLY on X_train
+
+    X_test is transformed using the already-fitted objects.
+
+    This prevents information from the outer test fold leaking
+    into the training process.
     """
-    scaler = MinMaxScaler(feature_range=(0, np.pi))
-    return scaler.fit_transform(X), scaler
+
+    # --------------------------------------------------------
+    # 1. Feature selection
+    # --------------------------------------------------------
+
+    selector = SelectKBest(
+        score_func=f_classif,
+        k=k_features
+    )
+
+    X_train_selected = selector.fit_transform(
+        X_train,
+        y_train
+    )
+
+    X_test_selected = selector.transform(
+        X_test
+    )
+
+    # --------------------------------------------------------
+    # 2. Scaling
+    # --------------------------------------------------------
+
+    scaler = MinMaxScaler(
+        feature_range=(0, np.pi)
+    )
+
+    X_train_scaled = scaler.fit_transform(
+        X_train_selected
+    )
+
+    X_test_scaled = scaler.transform(
+        X_test_selected
+    )
+
+    return (
+        X_train_scaled,
+        X_test_scaled,
+        selector,
+        scaler
+    )
 
 
-def get_cv_splits(X: np.ndarray, y: np.ndarray, n_splits: int = 5, seed: int = 42):
+# ============================================================
+# FEATURE NAMES
+# ============================================================
+
+def get_selected_feature_names(selector, feature_names):
     """
-    Stratified K-Fold splits. With only ~297 patients, a single
-    train/test split gives a noisy, unreliable performance estimate.
-    Cross-validation is the difference between "we got 86% once" and
-    "we got 84% plus or minus 3% across five independent folds" -- the
-    second claim is the one a judge or reviewer can actually trust.
+    Return the original names of the features selected by
+    SelectKBest.
     """
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    return list(skf.split(X, y))
+
+    feature_names = np.asarray(feature_names)
+
+    return feature_names[selector.get_support()].tolist()
 
 
-def prepare_dataset(dataset: str = "heart_disease", source: str = None,
-                     k_features: int = 4, n_splits: int = 5):
-    """
-    End-to-end preprocessing pipeline for ANY registered disease.
-    Returns everything downstream modules need: the selected+scaled
-    features, labels, fold indices, and the feature names (for SHAP)
-    -- identical shape and structure no matter which disease was
-    requested, which is exactly what lets quantum_model.py,
-    classical_baselines.py, and shap_explain.py run unmodified
-    across all three.
+# ============================================================
+# DATASET PREPARATION
+# ============================================================
 
-    Parameters
-    ----------
-    dataset : one of "heart_disease", "breast_cancer", "parkinsons"
-        (see DATASET_REGISTRY)
-    source  : optional override for the data location (a URL or local
-        file path). Ignored for breast_cancer, which loads from
-        scikit-learn directly and needs no network access.
+def prepare_dataset(
+    dataset="heart_disease",
+    source=None,
+    k_features=4,
+    n_splits=5
+):
     """
+    Load a dataset and create outer CV folds.
+
+    IMPORTANT:
+    Feature selection and scaling are deliberately NOT performed
+    here.
+
+    They are performed inside each outer training fold using
+    preprocess_fold().
+    """
+
     if dataset not in DATASET_REGISTRY:
         raise ValueError(
-            f"Unknown dataset '{dataset}'. Choose from: {list(DATASET_REGISTRY)}"
+            f"Unknown dataset '{dataset}'. "
+            f"Available datasets: {list(DATASET_REGISTRY.keys())}"
         )
 
-    cfg = DATASET_REGISTRY[dataset]
-    actual_source = source or cfg["default_source"]
-    X_raw, y = cfg["loader"](actual_source)
+    config = DATASET_REGISTRY[dataset]
 
-    X_selected, feature_names, selector = select_features(X_raw, y, k=k_features)
-    X_scaled, scaler = scale_to_angle_range(X_selected)
-    folds = get_cv_splits(X_scaled, y, n_splits=n_splits)
+    # Use default source if the user didn't provide one.
+    if source is None:
+        source = config["default_source"]
+
+    # Load raw data.
+    X_raw, y = config["loader"](source)
+
+    # Convert DataFrame to NumPy array while keeping the original
+    # feature names separately.
+    if isinstance(X_raw, pd.DataFrame):
+
+        feature_names = X_raw.columns.tolist()
+
+        X_raw_array = X_raw.values
+
+    else:
+
+        X_raw_array = np.asarray(X_raw)
+
+        feature_names = [
+            f"feature_{i}"
+            for i in range(X_raw_array.shape[1])
+        ]
+
+    y = np.asarray(y)
+
+    # Create OUTER CV folds on raw data.
+    folds = get_cv_splits(
+        X_raw_array,
+        y,
+        n_splits=n_splits
+    )
 
     return {
-        "X": X_scaled,
+        "X_raw": X_raw_array,
         "y": y,
         "feature_names": feature_names,
         "folds": folds,
-        "selector": selector,
-        "scaler": scaler,
+        "k_features": k_features,
         "n_patients": len(y),
         "dataset": dataset,
-        "disease_category": cfg["disease_category"],
-        "display_name": cfg["display_name"],
+        "disease_category": config["disease_category"],
+        "display_name": config["display_name"],
     }
 
 
-# Backward-compatible aliases for the single-disease version of this module.
-def load_raw_data(source: str = UCI_URL) -> pd.DataFrame:
-    return pd.read_csv(source, names=HEART_DISEASE_COLUMNS, na_values="?")
+# ============================================================
+# BACKWARD-COMPATIBLE ALIASES
+# ============================================================
+
+def load_heart_disease(source=None):
+    """
+    Backward-compatible heart disease loader.
+    """
+
+    if source is None:
+        source = DATASET_REGISTRY["heart_disease"]["default_source"]
+
+    return _load_heart_disease(source)
 
 
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.dropna().reset_index(drop=True)
-    df["target"] = (df["target"] > 0).astype(int)
-    return df
+def load_breast_cancer(source=None):
+    """
+    Backward-compatible breast cancer loader.
+    """
 
+    return _load_breast_cancer(source)
+
+
+def load_parkinsons(source=None):
+    """
+    Backward-compatible Parkinson's loader.
+    """
+
+    if source is None:
+        source = DATASET_REGISTRY["parkinsons"]["default_source"]
+
+    return _load_parkinsons(source)
+
+
+# ============================================================
+# TEST
+# ============================================================
 
 if __name__ == "__main__":
+
+    print("Available datasets:")
     for name in DATASET_REGISTRY:
-        print(f"\n--- {name} ---")
-        try:
-            data = prepare_dataset(dataset=name)
-            print(f"  {data['display_name']}  ({data['disease_category']})")
-            print(f"  Patients: {data['n_patients']}")
-            print(f"  Selected features: {data['feature_names']}")
-            print(f"  Class balance: {np.bincount(data['y'])} (no-disease, disease)")
-            print(f"  CV folds: {len(data['folds'])}")
-        except Exception as e:
-            print(f"  Could not load ({type(e).__name__}: {e})")
-            print("  -- likely needs internet access on this machine; the code itself is correct.")
+        print(f"  - {name}")
+
+    print("\nTesting breast cancer dataset...")
+
+    data = prepare_dataset(
+        dataset="breast_cancer",
+        k_features=4,
+        n_splits=5
+    )
+
+    print(f"Patients: {data['n_patients']}")
+    print(f"Original features: {len(data['feature_names'])}")
+    print(f"CV folds: {len(data['folds'])}")
+
+    print("\nPreprocessing test fold...")
+
+    train_idx, test_idx = data["folds"][0]
+
+    X_train = data["X_raw"][train_idx]
+    X_test = data["X_raw"][test_idx]
+
+    y_train = data["y"][train_idx]
+
+    (
+        X_train_processed,
+        X_test_processed,
+        selector,
+        scaler
+    ) = preprocess_fold(
+        X_train,
+        X_test,
+        y_train,
+        k_features=4
+    )
+
+    selected_names = get_selected_feature_names(
+        selector,
+        data["feature_names"]
+    )
+
+    print("Selected features:")
+    for name in selected_names:
+        print(f"  - {name}")
+
+    print(
+        f"\nTraining shape: {X_train_processed.shape}"
+    )
+
+    print(
+        f"Test shape: {X_test_processed.shape}"
+    )
+    print("\nprocessing test successful.")

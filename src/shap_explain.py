@@ -1,10 +1,15 @@
 """
 SIH26139 -- SHAP explainability module.
 
-Wraps the trained hybrid model in a SHAP KernelExplainer, using the
-ORIGINAL clinical feature names (age, cholesterol, chest pain type...)
-rather than PCA components, so every explanation is something a
-doctor can actually act on.
+Provides lightweight SHAP explanations for an already-trained model.
+
+Important:
+- This module does NOT retrain the QML model.
+- SHAP must receive the same feature representation that the trained
+  model expects.
+- Feature names should therefore correspond to the model input features.
+- For the current 4-feature QML pipeline, these are the 4 selected
+  features from the relevant preprocessing fold.
 """
 
 import numpy as np
@@ -13,67 +18,175 @@ import shap
 
 
 def make_predict_fn(model):
-    """Wrap the PyTorch model so SHAP can call it like a plain function."""
+    """
+    Wrap a PyTorch model so SHAP can call it like a normal NumPy function.
+    """
+
     def predict_fn(X_numpy: np.ndarray) -> np.ndarray:
         model.eval()
+
         with torch.no_grad():
-            X_t = torch.tensor(X_numpy, dtype=torch.float32)
-            return model(X_t).numpy()
+            X_t = torch.tensor(
+                X_numpy,
+                dtype=torch.float32
+            )
+
+            predictions = model(X_t)
+
+        return predictions.detach().cpu().numpy()
+
     return predict_fn
 
 
-def explain_predictions(model, X_background: np.ndarray, X_explain: np.ndarray,
-                         feature_names: list, n_background: int = 10,
-                         nsamples: int = 200):
+def explain_predictions(
+    model,
+    X_background: np.ndarray,
+    X_explain: np.ndarray,
+    feature_names: list,
+    n_background: int = 10,
+    nsamples: int = 100
+):
     """
-    Compute SHAP values for a small batch of patients.
+    Compute SHAP values for a small set of already-preprocessed samples.
 
-    Parameters kept deliberately small (n_background=10, nsamples=200):
-    SHAP's KernelExplainer calls the model nsamples times PER sample,
-    and each call runs a full quantum circuit simulation. Using the
-    library's defaults (nsamples=2048) here would take hours; these
-    reduced settings make the explainability step practical without
-    materially changing the ranking of which features matter most.
+    Parameters
+    ----------
+    model:
+        Already-trained PyTorch/QML model.
+
+    X_background:
+        Background samples in the SAME feature representation expected
+        by the model.
+
+    X_explain:
+        Samples to explain, also in the SAME representation.
+
+    feature_names:
+        Names corresponding to the columns of X_background/X_explain.
+
+    n_background:
+        Number of background samples used by KernelExplainer.
+
+    nsamples:
+        Number of SHAP perturbation samples.
+
+    Returns
+    -------
+    shap_values, explainer
     """
-    predict_fn = make_predict_fn(model)
+
+    X_background = np.asarray(X_background, dtype=np.float32)
+    X_explain = np.asarray(X_explain, dtype=np.float32)
+
+    if X_background.ndim != 2:
+        raise ValueError(
+            "X_background must be a 2D array."
+        )
+
+    if X_explain.ndim != 2:
+        raise ValueError(
+            "X_explain must be a 2D array."
+        )
+
+    if X_background.shape[1] != len(feature_names):
+        raise ValueError(
+            "Number of feature names does not match "
+            "the number of model input features."
+        )
+
+    if X_explain.shape[1] != X_background.shape[1]:
+        raise ValueError(
+            "X_explain and X_background must have "
+            "the same number of features."
+        )
+
     background = X_background[:n_background]
 
-    explainer = shap.KernelExplainer(predict_fn, background)
-    shap_values = explainer.shap_values(X_explain, nsamples=nsamples)
+    predict_fn = make_predict_fn(model)
+
+    explainer = shap.KernelExplainer(
+        predict_fn,
+        background
+    )
+
+    shap_values = explainer.shap_values(
+        X_explain,
+        nsamples=nsamples
+    )
 
     return shap_values, explainer
 
 
-def explain_single_patient(shap_values_row: np.ndarray, feature_names: list) -> dict:
+def explain_single_patient(
+    shap_values_row: np.ndarray,
+    feature_names: list
+) -> dict:
     """
-    Turn one patient's raw SHAP array into a sorted, human-readable
-    dict of {feature_name: contribution}, largest absolute impact first.
+    Convert one patient's SHAP values into a sorted dictionary.
+
+    Features with the largest absolute SHAP impact appear first.
     """
-    values = np.asarray(shap_values_row).flatten().tolist()
-    pairs = list(zip(feature_names, values))
-    pairs.sort(key=lambda p: abs(p[1]), reverse=True)
+
+    values = np.asarray(
+        shap_values_row
+    ).flatten().tolist()
+
+    if len(values) != len(feature_names):
+        raise ValueError(
+            "Number of SHAP values does not match "
+            "number of feature names."
+        )
+
+    pairs = list(
+        zip(feature_names, values)
+    )
+
+    pairs.sort(
+        key=lambda pair: abs(pair[1]),
+        reverse=True
+    )
+
     return dict(pairs)
 
 
-if __name__ == "__main__":
-    from preprocessing import prepare_dataset
-    from quantum_model import evaluate_hybrid_with_cv
+def summarize_shap_values(
+    shap_values: np.ndarray,
+    feature_names: list
+) -> dict:
+    """
+    Calculate mean absolute SHAP importance for each feature.
 
-    data = prepare_dataset()
-    scores, models = evaluate_hybrid_with_cv(data["X"], data["y"], data["folds"])
+    This is useful for creating a simple feature-importance table
+    without retraining the model.
+    """
 
-    best_fold = int(np.argmax(scores["auc"]["folds"]))
-    best_model = models[best_fold]
-    train_idx, test_idx = data["folds"][best_fold]
+    values = np.asarray(shap_values)
 
-    shap_values, _ = explain_predictions(
-        best_model,
-        X_background=data["X"][train_idx],
-        X_explain=data["X"][test_idx][:5],
-        feature_names=data["feature_names"],
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+
+    mean_abs_values = np.mean(
+        np.abs(values),
+        axis=0
     )
 
-    for i, row in enumerate(shap_values):
-        print(f"\nPatient {i+1}:")
-        for feat, val in explain_single_patient(row, data["feature_names"]).items():
-            print(f"  {feat:20s}: {val:+.4f}")
+    pairs = list(
+        zip(feature_names, mean_abs_values)
+    )
+
+    pairs.sort(
+        key=lambda pair: pair[1],
+        reverse=True
+    )
+
+    return {
+        feature: float(importance)
+        for feature, importance in pairs
+    }
+
+
+if __name__ == "__main__":
+    print("SHAP module loaded successfully.")
+    print(
+        "No model training is performed by this module."
+    )
